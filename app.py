@@ -34,7 +34,7 @@ def get_all_tickers():
     return tickers
 
 
-def main():
+def page_for_candlestick():
     tickers = get_all_tickers()
     num_tickers = len(tickers)
 
@@ -70,117 +70,171 @@ def main():
         fig = plot_candlestick(df)
         st.plotly_chart(fig, theme="streamlit", use_container_width=True)
 
-        supertrend_df = ta.supertrend(df['high'], df['low'], df['close'], length=10, multiplier=3)
-        supertrend_df.columns = ['trend', 'direction', 'long', 'short']
-        supertrend_df = pd.concat([df, supertrend_df], axis=1)
-        supertrend_df['sign'] = np.sign(supertrend_df['direction']).diff().ne(0)
-        print(supertrend_df.query('sign==1 & direction==1'))
-        print(supertrend_df.query('sign==1 & direction==-1'))
 
-        fig = make_subplots()
-        price_scatter = go.Scatter(
-            x=supertrend_df['date'],
-            y=supertrend_df['close'],
-            line=dict(color='white', width=1),
-            name="Close Price", 
-            opacity=.5
+def page_for_strategies():
+    tickers = get_all_tickers()
+    num_tickers = len(tickers)
+
+    col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
+    with col1:
+        symbol = st.selectbox(
+            'Symbol', tickers, 
+            index=tickers.index('AAPL'), 
+            help=f'There are {num_tickers} tickers in total. Currently support NASDAQ, S&P500, Crypto, and Taiwan OTC.', 
+            key=1
         )
-        supertrend_upper_scatter = go.Scatter(
-            x=supertrend_df['date'], 
-            y=np.where(
-                supertrend_df.index.isin(supertrend_df.query('direction==1').index), 
-                supertrend_df['long'], 
-                np.nan
-            ), 
-            line=dict(color='green'), 
-            name="SuperTrend Upper", 
-            opacity=.9
+    with col2:
+        since = st.date_input(
+            "Since", datetime.date(2022, 1, 1), key=2
         )
-        supertrend_lower_scatter = go.Scatter(
-            x=supertrend_df['date'], 
-            y=np.where(
-                supertrend_df.index.isin(supertrend_df.query('direction==-1').index), 
-                supertrend_df['short'], 
-                np.nan
-            ), 
-            line=dict(color='red'), 
-            name="SuperTrend Lower", 
-            opacity=.9
+    with col3:
+        until = st.date_input(
+            "Until", datetime.date(2023, 1, 1), key=3
         )
-        fig.add_trace(
-            price_scatter,
-            secondary_y=False
+    with col4:
+        interval = st.selectbox(
+            'Interval', 
+            ('1d', '5d', '1wk', '1mo', '3mo'), 
+            index=0, 
+            key=4
         )
-        fig.add_trace(
-            supertrend_upper_scatter,
-            secondary_y=False
-        )
-        fig.add_trace(
-            supertrend_lower_scatter,
-            secondary_y=False
-        )
-        for idx, row in supertrend_df.query('sign==1 & direction==1').iterrows():
-            if idx == 0:
-                continue
-            x, y = row['date'], row['trend']
-            fig.add_annotation(
-                x=x,
-                y=y-5,
-                xref="x",
-                yref="y",
-                text="BUY", 
-                showarrow=False,
-                font=dict(
-                    family="Courier New, monospace",
-                    size=10,
-                    color="#ffffff"
-                ),
-                align="center", 
-                bordercolor="#007500",
-                borderwidth=2,
-                borderpad=4,
-                bgcolor="#007500",
-                opacity=0.8
+    strategy = st.selectbox('Strategy', options=['SuperTrend'], key=5)
+
+    if strategy.lower() == 'supertrend':
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            length = st.number_input('Length', min_value=1, value=10)
+        with col2:
+            multiplier = st.number_input('Multiplier', min_value=1, value=3)
+
+    button = st.button('Run', key=6)
+
+    if button:
+        df = yf.download(symbol, start=since, end=until, interval=interval)
+        df = df.reset_index(drop=False)
+        df.columns = df.columns.str.lower()
+
+        if strategy.lower() == 'supertrend':
+            supertrend_df = ta.supertrend(df['high'], df['low'], df['close'], length=length, multiplier=multiplier)
+            supertrend_df.columns = ['trend', 'direction', 'long', 'short']
+            supertrend_df = pd.concat([df, supertrend_df], axis=1)
+            supertrend_df['sign'] = np.sign(supertrend_df['direction']).diff().ne(0)
+
+            fig = make_subplots()
+            price_scatter = go.Scatter(
+                x=supertrend_df['date'],
+                y=supertrend_df['close'],
+                line=dict(color='white', width=1),
+                name="Close Price", 
+                opacity=.5
             )
-        for idx, row in supertrend_df.query('sign==1 & direction==-1').iterrows():
-            if idx == 0:
-                continue
-            x, y = row['date'], row['trend']
-            fig.add_annotation(
-                x=x,
-                y=y+5,
-                xref="x",
-                yref="y",
-                text="SELL", 
-                showarrow=False,
-                font=dict(
-                    family="Courier New, monospace",
-                    size=10,
-                    color="#ffffff"
-                ),
-                align="center", 
-                bordercolor="#DC143C",
-                borderwidth=2,
-                borderpad=4,
-                bgcolor="#DC143C",
-                opacity=0.8
+            supertrend_upper_scatter = go.Scatter(
+                x=supertrend_df['date'], 
+                y=np.where(
+                    supertrend_df.index.isin(supertrend_df.query('direction==1').index), 
+                    supertrend_df['long'], 
+                    np.nan
+                ), 
+                line=dict(color='green'), 
+                name="SuperTrend Upper", 
+                opacity=.9
             )
-        fig.update_traces(connectgaps=False)
-        fig.update_layout(
-            title='SuperTrend',
-            xaxis_title='Date', 
-            yaxis_title='Price', 
-            xaxis_rangeslider_visible=False, 
-            legend=dict(
-                title='', 
-                orientation="h", 
-                yanchor="bottom",
-                y=1.02,
-                xanchor="right",
-                x=1
-            ), 
-        )
-        st.plotly_chart(fig, theme="streamlit", use_container_width=True)
+            supertrend_lower_scatter = go.Scatter(
+                x=supertrend_df['date'], 
+                y=np.where(
+                    supertrend_df.index.isin(supertrend_df.query('direction==-1').index), 
+                    supertrend_df['short'], 
+                    np.nan
+                ), 
+                line=dict(color='red'), 
+                name="SuperTrend Lower", 
+                opacity=.9
+            )
+            fig.add_trace(
+                price_scatter,
+                secondary_y=False
+            )
+            fig.add_trace(
+                supertrend_upper_scatter,
+                secondary_y=False
+            )
+            fig.add_trace(
+                supertrend_lower_scatter,
+                secondary_y=False
+            )
+            for idx, row in supertrend_df.query('sign==1 & direction==1').iterrows():
+                if idx == 0:
+                    continue
+                x, y = row['date'], row['trend']
+                fig.add_annotation(
+                    x=x,
+                    y=y-5,
+                    xref="x",
+                    yref="y",
+                    text="BUY", 
+                    showarrow=False,
+                    font=dict(
+                        family="Courier New, monospace",
+                        size=10,
+                        color="#ffffff"
+                    ),
+                    align="center", 
+                    bordercolor="#007500",
+                    borderwidth=2,
+                    borderpad=4,
+                    bgcolor="#007500",
+                    opacity=0.8
+                )
+            for idx, row in supertrend_df.query('sign==1 & direction==-1').iterrows():
+                if idx == 0:
+                    continue
+                x, y = row['date'], row['trend']
+                fig.add_annotation(
+                    x=x,
+                    y=y+5,
+                    xref="x",
+                    yref="y",
+                    text="SELL", 
+                    showarrow=False,
+                    font=dict(
+                        family="Courier New, monospace",
+                        size=10,
+                        color="#ffffff"
+                    ),
+                    align="center", 
+                    bordercolor="#DC143C",
+                    borderwidth=2,
+                    borderpad=4,
+                    bgcolor="#DC143C",
+                    opacity=0.8
+                )
+            fig.update_traces(connectgaps=False)
+            fig.update_layout(
+                title='SuperTrend',
+                xaxis_title='Date', 
+                yaxis_title='Price', 
+                xaxis_rangeslider_visible=False, 
+                legend=dict(
+                    title='', 
+                    orientation="h", 
+                    yanchor="bottom",
+                    y=1.02,
+                    xanchor="right",
+                    x=1
+                ), 
+            )
+            st.plotly_chart(fig, theme="streamlit", use_container_width=True)
+
+
+def main():
+    page = st.sidebar.selectbox(
+        label='MENU', 
+        options=['Candlestick', 'Strategy']
+    )
+    if page.lower() == 'candlestick':
+        page_for_candlestick()
+    elif page.lower() == 'strategy':
+        page_for_strategies()
 
 
 if __name__ == '__main__':
