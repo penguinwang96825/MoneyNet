@@ -1,3 +1,4 @@
+import os
 import datetime
 import itertools
 import numpy as np
@@ -7,8 +8,19 @@ import streamlit as st
 import pandas_ta as ta
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from deta import Deta
+from hashlib import sha256
+from tqdm.auto import tqdm
+from stqdm import stqdm
+from pandas.api.types import (
+    is_categorical_dtype,
+    is_datetime64_any_dtype,
+    is_numeric_dtype,
+    is_object_dtype,
+)
+from streamlit_extras.stateful_button import button as extra_button
 
-from src.utils import hide_header_and_footer, read_css_file
+from src.utils import hide_header_and_footer, read_css_file, make_clickable
 from src.tickers import (
     get_nasdaq_tickers, 
     get_sp500_tickers, 
@@ -16,6 +28,7 @@ from src.tickers import (
     get_taiwan_sem_tickers, 
     get_taiwan_otc_tickers
 )
+from src.crawlers import nypost
 from src.visualization import plot_candlestick
 
 st.set_page_config(layout='wide')
@@ -52,7 +65,8 @@ def page_for_candlestick():
         )
     with col3:
         until = st.date_input(
-            "Until", datetime.date(2023, 1, 1), key=3
+            # "Until", datetime.date(2023, 1, 1), key=3
+            "Until", datetime.date.today(), key=3
         )
     with col4:
         interval = st.selectbox(
@@ -89,7 +103,8 @@ def page_for_strategies():
         )
     with col3:
         until = st.date_input(
-            "Until", datetime.date(2023, 1, 1), key=3
+            # "Until", datetime.date(2023, 1, 1), key=3
+            "Until", datetime.date.today(), key=3
         )
     with col4:
         interval = st.selectbox(
@@ -98,7 +113,11 @@ def page_for_strategies():
             index=0, 
             key=4
         )
-    strategy = st.selectbox('Strategy', options=['SuperTrend'], key=5)
+    strategy = st.selectbox(
+        'Strategy', 
+        options=['SuperTrend'], 
+        key=5
+    )
 
     if strategy.lower() == 'supertrend':
         col1, col2 = st.columns([1, 1])
@@ -226,15 +245,146 @@ def page_for_strategies():
             st.plotly_chart(fig, theme="streamlit", use_container_width=True)
 
 
+def page_for_news():
+    fetch_or_update = st.sidebar.selectbox('Database', options=['Fetch', 'Update'])
+
+    DETA_KEY = os.getenv('DETA_KEY') or st.secrets['NEWS_DATABASE']['DETA_KEY']
+    deta = Deta(DETA_KEY)
+    db = deta.Base("News")
+
+    if fetch_or_update.lower() == 'fetch':
+        sources = st.multiselect('Sources', options=['NYPOST'])
+        sources = [source.lower() for source in sources]
+        button = extra_button('Run', key='fetch_button')
+
+        if button:
+            res = db.fetch()
+            df = pd.DataFrame(res.items)
+            df = df.query('source in @sources')
+            df = df[['title', 'date', 'time', 'link', 'source']]
+            st.dataframe(filter_dataframe(df))
+            
+    elif fetch_or_update.lower() == 'update':
+        col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
+        with col1:
+            sources = st.multiselect('Sources', options=['NYPOST'])
+            sources = [source.lower() for source in sources]
+        with col2:
+            pages = st.number_input('Pages', min_value=1, value=5)
+        if 'nypost' in sources:
+            sections = st.multiselect(
+                'NYPOST Sections', 
+                options=['business', 'tech', 'metro', 'sports', 'entertainment', 'opinion']
+            )
+        button = st.button('Run', key='update_button')
+
+        if button:
+            if 'nypost' in sources:
+                data_dict = []
+                pbar = stqdm(enumerate(sections), total=len(sections))
+                for idx, section in pbar:
+                    pbar.set_description(f'Download {section}')
+                    base_url = nypost.URLS[section]
+                    data_dict.extend(nypost.get_multi_pages(pages, base_url))
+                df = pd.DataFrame(data_dict)
+                # df['link'] = df['link'].apply(make_clickable)
+                # st.write(df.to_html(escape=False), unsafe_allow_html=True)
+
+                for data in stqdm(data_dict, desc='Store to DB'):
+                    key = sha256(data['title'].encode('utf-8')).hexdigest()
+                    db.put(data, key=key)
+
+            st.success('Store to Database!')
+        
+
+def filter_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Adds a UI on top of a dataframe to let viewers filter columns
+
+    Args:
+        df (pd.DataFrame): Original dataframe
+
+    Returns:
+        pd.DataFrame: Filtered dataframe
+    """
+    # modify = st.checkbox("Add filters")
+
+    # if not modify:
+    #     return df
+
+    df = df.copy()
+
+    # Try to convert datetimes into a standard format (datetime, no timezone)
+    # for col in df.columns:
+    #     if is_object_dtype(df[col]):
+    #         try:
+    #             df[col] = pd.to_datetime(df[col])
+    #         except Exception:
+    #             pass
+
+    #     if is_datetime64_any_dtype(df[col]):
+    #         df[col] = df[col].dt.tz_localize(None)
+
+    modification_container = st.container()
+
+    with modification_container:
+        to_filter_columns = st.multiselect("Filter dataframe on", df.columns)
+        for column in to_filter_columns:
+            left, right = st.columns((1, 20))
+            left.write("↳")
+            # Treat columns with < 10 unique values as categorical
+            if is_categorical_dtype(df[column]) or df[column].nunique() < 10:
+                user_cat_input = right.multiselect(
+                    f"Values for {column}",
+                    df[column].unique(),
+                    default=list(df[column].unique()),
+                )
+                df = df[df[column].isin(user_cat_input)]
+            elif is_numeric_dtype(df[column]):
+                _min = float(df[column].min())
+                _max = float(df[column].max())
+                step = (_max - _min) / 100
+                user_num_input = right.slider(
+                    f"Values for {column}",
+                    _min,
+                    _max,
+                    (_min, _max),
+                    step=step,
+                )
+                df = df[df[column].between(*user_num_input)]
+            elif is_datetime64_any_dtype(df[column]):
+                user_date_input = right.date_input(
+                    f"Values for {column}",
+                    value=(
+                        df[column].min(),
+                        df[column].max(),
+                    ),
+                )
+                if len(user_date_input) == 2:
+                    user_date_input = tuple(map(pd.to_datetime, user_date_input))
+                    start_date, end_date = user_date_input
+                    df = df.loc[df[column].between(start_date, end_date)]
+            else:
+                user_text_input = right.text_input(
+                    f"Substring or regex in {column}",
+                )
+                if user_text_input:
+                    df = df[df[column].str.contains(user_text_input.lower(), case=False)]
+
+    return df
+
+
 def main():
     page = st.sidebar.selectbox(
         label='MENU', 
-        options=['Candlestick', 'Strategy']
+        options=['Candlestick', 'Strategy', 'News']
     )
     if page.lower() == 'candlestick':
         page_for_candlestick()
     elif page.lower() == 'strategy':
         page_for_strategies()
+    elif page.lower() == 'news':
+        page_for_news()
 
 
 if __name__ == '__main__':
