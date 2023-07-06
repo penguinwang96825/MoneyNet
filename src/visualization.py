@@ -3,7 +3,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 
-def plot_candlestick(df):
+def plot_candlestick(df, plot_volume=True):
     candlestick = go.Candlestick(
         x=df['date'],
         open=df['open'], 
@@ -35,11 +35,12 @@ def plot_candlestick(df):
         scatter,
         secondary_y=False
     )
-    fig.add_trace(
-        bar,
-        secondary_y=True
-    )
-    fig.layout.yaxis2.showgrid = False
+    if plot_volume:
+        fig.add_trace(
+            bar,
+            secondary_y=True
+        )
+        fig.layout.yaxis2.showgrid = False
     fig.update_layout(
         title='Candlestick',
         xaxis_title='Date',
